@@ -1,30 +1,37 @@
--- Wavestorm Git panel for the Defold editor.
--- Provides commit / push / pull / branch / history workflows via
--- Project menu + Assets/Code/Outline context menus.
--- Requires the `git` CLI on PATH. All git work runs through editor.execute.
+-- Wavestorm Git v2 for the Defold editor.
+-- Entry point: registers the Git panel + file commands and the prefs schema.
+-- All git work happens in wavestorm_git/lib/{git,panel,dialogs}.lua.
+--
+-- Requires the `git` CLI on PATH (checked by Setup / Doctor).
 local M = {}
 
 local function core()
-	local ok, mod = pcall(require, "wavestorm_git.git_core")
-	if ok then return mod end
-	error("wavestorm_git.git_core missing: " .. tostring(mod))
+	local okk, mod = pcall(require, "wavestorm_git.lib.git")
+	if okk then return mod end
+	error("wavestorm_git/lib/git.lua missing: " .. tostring(mod))
 end
 
-local function ui_mod()
-	local ok, mod = pcall(require, "wavestorm_git.git_ui")
-	if ok then return mod end
-	error("wavestorm_git.git_ui missing: " .. tostring(mod))
+local function dialogs()
+	local okk, mod = pcall(require, "wavestorm_git.lib.dialogs")
+	if okk then return mod end
+	error("wavestorm_git/lib/dialogs.lua missing: " .. tostring(mod))
 end
 
 local function prefs_get(key, fallback)
 	if type(editor) == "table" and type(editor.prefs) == "table" then
-		local ok, v = pcall(editor.prefs.get, key)
-		if ok and v ~= nil then return v end
+		local okk, v = pcall(editor.prefs.get, key)
+		if okk and v ~= nil then return v end
 	end
 	return fallback
 end
 
-local function save_if_needed()
+local function save_if_pref()
+	if prefs_get("wavestorm_git.auto_save", true) then
+		pcall(editor.save)
+	end
+end
+
+local function save_if_pref()
 	if prefs_get("wavestorm_git.auto_save", true) then
 		pcall(editor.save)
 	end
@@ -32,363 +39,274 @@ end
 
 local function selection_path(selection)
 	if selection == nil then return nil end
-	local ok, path = pcall(editor.get, selection, "path")
-	if not ok or type(path) ~= "string" or path == "" then return nil end
+	local okk, path = pcall(editor.get, selection, "path")
+	if not okk or type(path) ~= "string" or path == "" then return nil end
 	-- Editor paths look like "/main/player.script"; git wants "main/player.script".
 	if path:sub(1, 1) == "/" then path = path:sub(2) end
 	return path
 end
 
--- Returns true when a repo is present, else shows an error and returns false.
 local function need_repo(git)
-	local ok, err = git.is_repo()
-	if ok then return true end
-	ui_mod().error_dialog("Git: Not a repository",
-		"This project is not inside a git working tree.\n\n"
-		.. tostring(err or "")
-		.. "\n\nUse Project > Git: Setup / Doctor to initialise one.")
+	local res = git.is_repo()
+	if res.ok and res.data == true then return true end
+	dialogs().error("Git: Not a repository", res)
 	return false
+end
+
+local function file_active(opts)
+	local okk, path = pcall(editor.get, opts.selection, "path")
+	return okk and type(path) == "string" and path ~= ""
 end
 
 -- ---------------------------------------------------------------------------
 -- Command implementations
 -- ---------------------------------------------------------------------------
 
-local function cmd_status_panel()
-	local git = core()
-	local gui = ui_mod()
-	if not need_repo(git) then return end
-	save_if_needed()
-
-	while true do
-		local status, err = git.status()
-		if not status then
-			gui.error_dialog("Git: Status failed", tostring(err))
-			return
-		end
-		if #status.conflicts > 0 then
-			print("[wavestorm_git] merge conflicts detected in: ")
-			for i = 1, #status.conflicts do
-				print("  " .. status.conflicts[i].path)
-			end
-		end
-		local push_after_pref = prefs_get("wavestorm_git.push_after_commit", false)
-		local action, data = gui.commit_panel(status, { push_after = push_after_pref })
-		if action == nil or action == false then
-			return -- cancelled
-		elseif action == "refresh" then
-			-- loop and re-query
-		elseif action == "commit" or action == "commit_push" then
-			if #data.paths == 0 then
-				gui.error_dialog("Git: Nothing selected", "Tick at least one file to commit.")
-			elseif (data.message or ""):match("%S") == nil then
-				gui.error_dialog("Git: Empty message", "Write a commit message first.")
-			else
-				save_if_needed()
-				local ok_add, err_add = git.add(data.paths)
-				if not ok_add then
-					gui.error_dialog("Git: Stage failed", tostring(err_add))
-					return
-				end
-				local ok_c, out_c = git.commit(data.message, data.amend)
-				if not ok_c then
-					gui.error_dialog("Git: Commit failed", tostring(out_c))
-					return
-				end
-				print("[wavestorm_git] commit ok:\n" .. tostring(out_c))
-				if action == "commit_push" or data.push_after then
-					local branch = git.current_branch()
-					local remote = prefs_get("wavestorm_git.default_remote", "origin")
-					local set_u = (status.upstream == "" and branch ~= nil)
-					local ok_p, out_p = git.push(remote, branch, set_u)
-					if not ok_p then
-						gui.error_dialog("Git: Push failed", tostring(out_p)
-							.. "\n\nCommit succeeded locally; push manually later.")
-						return
-					end
-					print("[wavestorm_git] push ok:\n" .. tostring(out_p))
-					gui.info_dialog("Git: Done", "Committed and pushed successfully.")
-				else
-					gui.info_dialog("Git: Done", "Committed successfully:\n\n" .. tostring(out_c))
-				end
-				return
-			end
-		else
-			return
-		end
-	end
+local function cmd_panel()
+	require("wavestorm_git.lib.panel").open()
 end
 
 local function cmd_quick_commit()
 	local git = core()
-	local gui = ui_mod()
 	if not need_repo(git) then return end
-	local message = gui.input_dialog("Git: Quick Commit", "Commit message:", "", "Commit")
+	local message = dialogs().input("Git: Quick Commit", "Commit message:", "", "Commit")
 	if message == nil then return end
 	if message:match("%S") == nil then
-		gui.error_dialog("Git: Empty message", "Write a commit message first.")
+		dialogs().error("Git: Quick Commit", "Write a commit message first.")
 		return
 	end
-	save_if_needed()
-	local ok_add, err_add = git.add_all()
-	if not ok_add then
-		gui.error_dialog("Git: Stage failed", tostring(err_add))
-		return
-	end
-	local ok_c, out_c = git.commit(message, false)
-	if not ok_c then
-		gui.error_dialog("Git: Commit failed", tostring(out_c))
-		return
-	end
-	print("[wavestorm_git] quick commit ok:\n" .. tostring(out_c))
-	gui.info_dialog("Git: Committed", tostring(out_c))
-end
-
-local function cmd_push()
-	local git = core()
-	local gui = ui_mod()
-	if not need_repo(git) then return end
-	save_if_needed()
-	local remotes = git.remotes() or {}
-	local branch = git.current_branch()
-	local res = gui.remote_dialog("Git: Push", remotes, branch,
-		prefs_get("wavestorm_git.default_remote", "origin"))
-	if res == nil then return end
-	-- If no upstream yet, set it.
-	local status = git.status()
-	local set_u = status and status.upstream == "" or false
-	local ok_p, out_p = git.push(res.remote, res.branch ~= "" and res.branch or branch, set_u)
-	if not ok_p then
-		gui.error_dialog("Git: Push failed", tostring(out_p))
-		return
-	end
-	print("[wavestorm_git] push ok:\n" .. tostring(out_p))
-	gui.info_dialog("Git: Pushed", tostring(out_p) ~= "" and tostring(out_p) or "Push succeeded.")
-end
-
-local function cmd_pull()
-	local git = core()
-	local gui = ui_mod()
-	if not need_repo(git) then return end
-	save_if_needed()
-	local remotes = git.remotes() or {}
-	local branch = git.current_branch()
-	local res = gui.remote_dialog("Git: Pull", remotes, branch,
-		prefs_get("wavestorm_git.default_remote", "origin"))
-	if res == nil then return end
-	local ok_p, out_p = git.pull(res.remote, res.branch ~= "" and res.branch or nil)
-	if not ok_p then
-		gui.error_dialog("Git: Pull failed",
-			tostring(out_p) .. "\n\nIf there are conflicts, resolve them in an external client, then use the Status panel.")
-		return
-	end
-	print("[wavestorm_git] pull ok:\n" .. tostring(out_p))
-	gui.info_dialog("Git: Pulled", tostring(out_p) ~= "" and tostring(out_p) or "Already up to date.")
-end
-
-local function cmd_fetch()
-	local git = core()
-	local gui = ui_mod()
-	if not need_repo(git) then return end
-	local ok_f, out_f = git.fetch("--all")
-	if not ok_f then
-		gui.error_dialog("Git: Fetch failed", tostring(out_f))
-		return
-	end
-	local status = git.status()
-	local summary = status and git.summary(status) or tostring(out_f)
-	print("[wavestorm_git] fetch ok. " .. summary)
-	gui.info_dialog("Git: Fetched", summary .. "\n\n" .. tostring(out_f or ""))
-end
-
-local function cmd_history()
-	local git = core()
-	local gui = ui_mod()
-	if not need_repo(git) then return end
-	local n = prefs_get("wavestorm_git.history_count", 25)
-	local commits, err = git.log(n, nil)
-	if not commits then
-		gui.error_dialog("Git: History failed", tostring(err))
-		return
-	end
-	print(string.format("[wavestorm_git] showing %d commit(s)", #commits))
-	gui.history_dialog(commits)
-end
-
-local function cmd_branches()
-	local git = core()
-	local gui = ui_mod()
-	if not need_repo(git) then return end
-	local branches, err = git.branches()
-	if not branches then
-		gui.error_dialog("Git: Branches failed", tostring(err))
-		return
-	end
-	local current = git.current_branch()
-	local action, data = gui.branch_dialog(branches, current)
-	if action == nil then return end
-	save_if_needed()
-	if action == "switch" then
-		local ok_c, out_c = git.checkout(data.branch, false)
-		if not ok_c then
-			gui.error_dialog("Git: Switch failed", tostring(out_c)
-				.. "\n\nCommit or stash your changes first.")
-			return
+	save_if_pref()
+	local res = git.add_all()
+	if res.ok then res = git.commit(message, false) end
+	if res.ok then
+		if prefs_get("wavestorm_git.push_after_commit", false) then
+			local st = git.status()
+			local branch = st.ok and st.data.branch or nil
+			local set_upstream = st.ok and st.data.upstream == nil and branch ~= nil
+			local pres = git.push(prefs_get("wavestorm_git.default_remote", "origin"), branch, set_upstream)
+			if not pres.ok then
+				res = { ok = false, kind = pres.kind,
+					message = "Commit succeeded, but push failed:\n" .. dialogs().result_text(pres),
+					hint = pres.hint }
+			else
+				res = { ok = true, data = "Committed & pushed." }
+			end
 		end
-		gui.info_dialog("Git: Branch", "Switched to '" .. tostring(data.branch) .. "'.")
-	elseif action == "create" then
-		local ok_c, out_c = git.checkout(data.branch, true)
-		if not ok_c then
-			gui.error_dialog("Git: Create branch failed", tostring(out_c))
-			return
-		end
-		gui.info_dialog("Git: Branch", "Created and switched to '" .. tostring(data.branch) .. "'.")
+	end
+	if res.ok then
+		dialogs().info("Git: Quick Commit", "Committed:\n\n" .. dialogs().result_text(res))
+		print("[wavestorm_git] quick commit: " .. dialogs().result_text(res))
+	else
+		dialogs().error("Git: Quick Commit", res)
 	end
 end
 
 local function cmd_doctor()
 	local git = core()
-	local gui = ui_mod()
+	local gui = dialogs()
 	local lines = {}
+
 	lines[#lines + 1] = "Editor: " .. tostring(editor.version) .. " on " .. tostring(editor.platform)
 
-	local ok_git, ver = git.exec({ "--version" })
-	lines[#lines + 1] = ok_git and ("git: " .. tostring(ver)) or ("git NOT FOUND: " .. tostring(ver))
-
-	local ok_repo = git.is_repo()
-	lines[#lines + 1] = ok_repo and "repo: yes (project is a git working tree)"
-		or "repo: NO - use Confirm below to run 'git init'"
-
-	if ok_repo then
-		local branch = git.current_branch()
-		lines[#lines + 1] = "branch: " .. tostring(branch or "(unknown)")
-		local status = git.status()
-		if status then
-			lines[#lines + 1] = git.summary(status)
-		end
-		local remotes = git.remotes() or {}
-		local rn = 0
-		for name, url in pairs(remotes) do
-			rn = rn + 1
-			lines[#lines + 1] = "remote '" .. name .. "': " .. url
-		end
-		if rn == 0 then lines[#lines + 1] = "remotes: (none configured)" end
-		local cfg = git.user_config()
-		lines[#lines + 1] = "user.name: " .. (cfg.name ~= "" and cfg.name or "(not set)")
-		lines[#lines + 1] = "user.email: " .. (cfg.email ~= "" and cfg.email or "(not set)")
-		if cfg.name == "" or cfg.email == "" then
-			lines[#lines + 1] = ""
-			lines[#lines + 1] = "Set identity with: git config user.name \"Your Name\" && git config user.email \"you@example.com\""
-		end
-		lines[#lines + 1] = ""
-		lines[#lines + 1] = "Ignored by editor build output: /build, /.internal (see .gitignore)."
-		lines[#lines + 1] = "Large binaries: consider Git LFS for PSD/WAV/large assets."
+	local ver = git.git_version()
+	if ver.ok then
+		lines[#lines + 1] = "git: " .. ver.data
+	else
+		lines[#lines + 1] = "git: NOT FOUND on PATH — install git and reload."
 	end
 
-	gui.text_dialog("Git: Setup / Doctor", table.concat(lines, "\n"))
+	local repo = git.is_repo()
+	lines[#lines + 1] = (repo.ok and repo.data == true)
+		and "repo: yes (project is a git working tree)"
+		or "repo: NO — run 'git init' (button below after closing this dialog)"
 
-	if not ok_repo then
-		if gui.confirm_dialog("Git: Init repository?",
-			"No git repository found. Initialise one in the project root?", "Init") then
-			local ok_i, out_i = git.exec({ "init" }, { reload = true })
-			if not ok_i then
-				gui.error_dialog("Git: Init failed", tostring(out_i))
-				return
+	if repo.ok and repo.data then
+		local st = git.status()
+		if st.ok then
+			local stt = st.data
+			if stt.head_state == "detached" then
+				lines[#lines + 1] = "branch: (detached HEAD)"
+			else
+				lines[#lines + 1] = "branch: " .. tostring(stt.branch) .. " ("
+					.. tostring(stt.head_state) .. ")"
 			end
-			print("[wavestorm_git] " .. tostring(out_i))
-			gui.info_dialog("Git: Initialised",
-				"Repository created. Next: add a remote, e.g.\n  git remote add origin <url>\n  git add -A && git commit -m \"Initial commit\"")
+			if stt.upstream then
+				lines[#lines + 1] = "upstream: " .. stt.upstream
+					.. (stt.ahead and string.format(" (ahead %d / behind %d)", stt.ahead, stt.behind or 0) or "")
+			else
+				lines[#lines + 1] = "upstream: (none — push with -u once)"
+			end
+			lines[#lines + 1] = git.summary(stt)
+			if stt.oid == "(initial)" then
+				lines[#lines + 1] = "note: no commits yet — stage files and commit."
+			end
+		end
+
+		local rem = git.remotes()
+		if rem.ok then
+			local n = 0
+			for name, url in pairs(rem.data) do
+				n = n + 1
+				lines[#lines + 1] = "remote '" .. name .. "': " .. url
+			end
+			if n == 0 then lines[#lines + 1] = "remotes: (none configured)" end
+		end
+
+		local cfg = git.user_config()
+		if cfg.ok then
+			lines[#lines + 1] = "user.name: " .. (cfg.data.name ~= "" and cfg.data.name or "(not set)")
+			lines[#lines + 1] = "user.email: " .. (cfg.data.email ~= "" and cfg.data.email or "(not set)")
+			if cfg.data.name == "" or cfg.data.email == "" then
+				lines[#lines + 1] = ""
+				lines[#lines + 1] = "Set identity (terminal):"
+				lines[#lines + 1] = "  git config --global user.name \"Your Name\""
+				lines[#lines + 1] = "  git config --global user.email \"you@example.com\""
+			end
+		end
+
+		local v2 = git.supports_v2()
+		lines[#lines + 1] = v2.ok and "porcelain v2: supported" or "porcelain v2: NOT supported — please update git."
+	end
+
+	lines[#lines + 1] = ""
+	lines[#lines + 1] = "Build output /build and /.internal is covered by .gitignore."
+	lines[#lines + 1] = "Large binaries: keep them in Git LFS or outside the repo."
+
+	gui.text("Git: Setup / Doctor", table.concat(lines, "\n"))
+
+	if not (repo.ok and repo.data) then
+		if ver.ok and gui.confirm("Git: Init repository?",
+			"No git repository found in this project. Initialise one now?", "Init") then
+			local res = git.exec({ "init" }, { reload = true })
+			if res[1] then
+				print("[wavestorm_git] " .. tostring(res[2]))
+				gui.info("Git: Initialised",
+					"Repository created.\nNext steps:\n  git remote add origin <url>\n  Stage files and make an initial commit.")
+			else
+				gui.error("Git: Init failed", res[3] and res[3].message or "git init failed")
+			end
 		end
 	end
 end
 
--- File-scoped helpers -------------------------------------------------------
+-- File-scoped commands -------------------------------------------------------
 
 local function cmd_diff_file(opts)
 	local git = core()
-	local gui = ui_mod()
 	if not need_repo(git) then return end
-	local path = selection_path(opts and opts.selection)
+	local path = selection_path(opts.selection)
 	if not path then
-		gui.error_dialog("Git: Diff", "Select a file first.")
+		dialogs().error("Git: Diff", "Select a file first.")
 		return
 	end
-	local ok_d, out_d = git.diff(path, false)
-	if not ok_d then
-		gui.error_dialog("Git: Diff failed", tostring(out_d))
-		return
-	end
-	if (out_d or "") == "" then
-		local ok_s, out_s = git.diff(path, true)
-		if ok_s and (out_s or "") ~= "" then
-			print("[wavestorm_git] staged diff for " .. path .. ":\n" .. out_s)
-			gui.text_dialog("Git: Staged diff - " .. path, out_s)
+	local res = git.diff(path, false)
+	if res.ok and res.data == "" then
+		res = git.diff(path, true)
+		if res.ok and res.data == "" then
+			dialogs().info("Git: Diff — " .. path, "No unstaged or staged changes for this file.")
 			return
 		end
-		gui.info_dialog("Git: Diff - " .. path, "No unstaged or staged changes for this file.")
-		return
 	end
-	print("[wavestorm_git] diff for " .. path .. ":\n" .. out_d)
-	gui.text_dialog("Git: Diff - " .. path, out_d)
+	if res.ok then
+		print("[wavestorm_git] diff " .. path)
+		dialogs().text("Git: Diff — " .. path, res.data)
+	else
+		dialogs().error("Git: Diff failed", res)
+	end
 end
 
-local function cmd_revert_file(opts)
+local function cmd_stage_file(opts)
 	local git = core()
-	local gui = ui_mod()
 	if not need_repo(git) then return end
-	local path = selection_path(opts and opts.selection)
-	if not path then
-		gui.error_dialog("Git: Revert", "Select a file first.")
+	local path = selection_path(opts.selection)
+	if not path then return end
+	save_if_pref()
+	local res = git.add(path)
+	if res.ok then
+		print("[wavestorm_git] staged " .. path)
+	else
+		dialogs().error("Git: Stage failed", res)
+	end
+end
+
+local function cmd_unstage_file(opts)
+	local git = core()
+	if not need_repo(git) then return end
+	local path = selection_path(opts.selection)
+	if not path then return end
+	save_if_pref()
+	local res = git.unstage(path)
+	if res.ok then
+		print("[wavestorm_git] unstaged " .. path)
+	else
+		dialogs().error("Git: Unstage failed", res)
+	end
+end
+
+local function cmd_discard_file(opts)
+	local git = core()
+	if not need_repo(git) then return end
+	local path = selection_path(opts.selection)
+	if not path then return end
+	-- Detect untracked to word the dialog correctly.
+	local st = git.status()
+	local is_untracked = false
+	if st.ok then
+		for i = 1, #st.data.files do
+			local f = st.data.files[i]
+			if f.path == path and f.untracked then is_untracked = true end
+		end
+	end
+	local extra = is_untracked and "\n\nThe untracked file will be deleted." or ""
+	if not dialogs().confirm("Git: Discard changes?",
+		"Discard ALL changes to:\n\n" .. path .. extra .. "\n\nThis cannot be undone in the editor.", "Discard") then
 		return
 	end
-	if not gui.confirm_dialog("Git: Revert file?",
-		"Discard ALL changes to:\n\n" .. path .. "\n\nThis cannot be undone in the editor.", "Revert") then
-		return
+	save_if_pref()
+	local res = git.discard(path, is_untracked)
+	if res.ok then
+		print("[wavestorm_git] discarded " .. path)
+	else
+		dialogs().error("Git: Discard failed", res)
 	end
-	save_if_needed()
-	local ok_r, out_r = git.revert_path(path)
-	if not ok_r then
-		gui.error_dialog("Git: Revert failed", tostring(out_r))
-		return
-	end
-	print("[wavestorm_git] reverted " .. path)
-	gui.info_dialog("Git: Reverted", path .. "\n\n" .. tostring(out_r or ""))
 end
 
 local function cmd_file_history(opts)
 	local git = core()
-	local gui = ui_mod()
 	if not need_repo(git) then return end
-	local path = selection_path(opts and opts.selection)
-	if not path then
-		gui.error_dialog("Git: History", "Select a file first.")
-		return
+	local path = selection_path(opts.selection)
+	if not path then return end
+	local res = git.log(prefs_get("wavestorm_git.history_count", 25), path)
+	if res.ok then
+		dialogs().history(res.data, "Git: History — " .. path)
+	else
+		dialogs().error("Git: History failed", res)
 	end
-	local n = prefs_get("wavestorm_git.history_count", 25)
-	local commits, err = git.log(n, path)
-	if not commits then
-		gui.error_dialog("Git: History failed", tostring(err))
-		return
-	end
-	gui.history_dialog(commits)
 end
 
 local function cmd_blame_file(opts)
 	local git = core()
-	local gui = ui_mod()
 	if not need_repo(git) then return end
-	local path = selection_path(opts and opts.selection)
-	if not path then
-		gui.error_dialog("Git: Blame", "Select a file first.")
-		return
+	local path = selection_path(opts.selection)
+	if not path then return end
+	local res = git.blame(path)
+	if res.ok then
+		print("[wavestorm_git] blame " .. path)
+		dialogs().text("Git: Blame — " .. path, res.data)
+	else
+		dialogs().error("Git: Blame failed", res)
 	end
-	local ok_b, out_b = git.blame(path)
-	if not ok_b then
-		gui.error_dialog("Git: Blame failed", tostring(out_b))
-		return
+end
+
+local function cmd_history_all()
+	local git = core()
+	if not need_repo(git) then return end
+	local res = git.log(prefs_get("wavestorm_git.history_count", 25), nil)
+	if res.ok then
+		dialogs().history(res.data)
+	else
+		dialogs().error("Git: History failed", res)
 	end
-	print("[wavestorm_git] blame for " .. path .. " (see dialog)")
-	gui.text_dialog("Git: Blame - " .. path, out_b)
 end
 
 -- ---------------------------------------------------------------------------
@@ -400,6 +318,8 @@ function M.get_prefs_schema()
 		["wavestorm_git.default_remote"] = editor.prefs.schema.string({ default = "origin" }),
 		["wavestorm_git.auto_save"] = editor.prefs.schema.boolean({ default = true }),
 		["wavestorm_git.push_after_commit"] = editor.prefs.schema.boolean({ default = false }),
+		["wavestorm_git.pull_ff_only"] = editor.prefs.schema.boolean({ default = false }),
+		["wavestorm_git.confirm_discard"] = editor.prefs.schema.boolean({ default = true }),
 		["wavestorm_git.history_count"] = editor.prefs.schema.integer({ default = 25 }),
 	}
 end
@@ -407,9 +327,9 @@ end
 function M.get_commands()
 	return {
 		{
-			label = "Git: Status / Commit & Push...",
+			label = "Git Panel",
 			locations = { "Project" },
-			run = cmd_status_panel,
+			run = cmd_panel,
 		},
 		{
 			label = "Git: Quick Commit...",
@@ -417,29 +337,9 @@ function M.get_commands()
 			run = cmd_quick_commit,
 		},
 		{
-			label = "Git: Push...",
-			locations = { "Project" },
-			run = cmd_push,
-		},
-		{
-			label = "Git: Pull...",
-			locations = { "Project" },
-			run = cmd_pull,
-		},
-		{
-			label = "Git: Fetch",
-			locations = { "Project" },
-			run = cmd_fetch,
-		},
-		{
 			label = "Git: History...",
 			locations = { "Project" },
-			run = cmd_history,
-		},
-		{
-			label = "Git: Branches...",
-			locations = { "Project" },
-			run = cmd_branches,
+			run = cmd_history_all,
 		},
 		{
 			label = "Git: Setup / Doctor...",
@@ -450,30 +350,35 @@ function M.get_commands()
 			label = "Git: Diff File",
 			locations = { "Assets", "Code", "Outline" },
 			query = { selection = { type = "resource", cardinality = "one" } },
-			active = function(opts)
-				local ok, path = pcall(editor.get, opts.selection, "path")
-				return ok and type(path) == "string" and path ~= ""
-			end,
+			active = file_active,
 			run = cmd_diff_file,
 		},
 		{
-			label = "Git: Revert File...",
+			label = "Git: Stage File",
 			locations = { "Assets", "Code", "Outline" },
 			query = { selection = { type = "resource", cardinality = "one" } },
-			active = function(opts)
-				local ok, path = pcall(editor.get, opts.selection, "path")
-				return ok and type(path) == "string" and path ~= ""
-			end,
-			run = cmd_revert_file,
+			active = file_active,
+			run = cmd_stage_file,
+		},
+		{
+			label = "Git: Unstage File",
+			locations = { "Assets", "Code", "Outline" },
+			query = { selection = { type = "resource", cardinality = "one" } },
+			active = file_active,
+			run = cmd_unstage_file,
+		},
+		{
+			label = "Git: Discard File Changes...",
+			locations = { "Assets", "Code", "Outline" },
+			query = { selection = { type = "resource", cardinality = "one" } },
+			active = file_active,
+			run = cmd_discard_file,
 		},
 		{
 			label = "Git: History for File",
 			locations = { "Assets", "Code", "Outline" },
 			query = { selection = { type = "resource", cardinality = "one" } },
-			active = function(opts)
-				local ok, path = pcall(editor.get, opts.selection, "path")
-				return ok and type(path) == "string" and path ~= ""
-			end,
+			active = file_active,
 			run = cmd_file_history,
 		},
 		{
@@ -481,12 +386,9 @@ function M.get_commands()
 			locations = { "Assets", "Code" },
 			query = { selection = { type = "resource", cardinality = "one" } },
 			active = function(opts)
-				local ok, path = pcall(editor.get, opts.selection, "path")
-				if not (ok and type(path) == "string" and path ~= "") then return false end
-				return path:match("%.lua$") ~= nil
-					or path:match("%.script$") ~= nil
-					or path:match("%.gui_script$") ~= nil
-					or path:match("%.editor_script$") ~= nil
+				if not file_active(opts) then return false end
+				local _, path = pcall(editor.get, opts.selection, "path")
+				return type(path) == "string" and path:match("%.lua$") ~= nil
 			end,
 			run = cmd_blame_file,
 		},
