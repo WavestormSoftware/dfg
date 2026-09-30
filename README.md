@@ -1,81 +1,96 @@
 # defold-git
 
-Git collaboration panel for the [Defold](https://defold.com) editor — commit,
-push, pull, branches, history, diff / revert / blame — without leaving the
-editor. By [WavestormSoftware](https://github.com/WavestormSoftware).
+Git collaboration panel for the [Defold](https://defold.com) editor — a
+**non-modal Git window** with commit, push, pull, branches, history and
+per-file diff / blame / discard, by
+[WavestormSoftware](https://github.com/WavestormSoftware).
 
 Defold's built-in *Changed Files* pane only shows local status, diff and
 revert. This extension adds the missing half: committing and pushing changes,
-syncing with remotes, switching branches and browsing history.
+syncing with remotes, switching branches and browsing history — all from one
+panel that stays open while you edit.
 
 ## Install (60 seconds)
 
-Requires the `git` command-line client on your `PATH`.
+Requires the `git` command-line client on your `PATH` (2.19+).
 
-**Option A — as a library dependency (recommended):**
+**Option A — library dependency (recommended):**
 
-1. Open your game's `game.project` → **Dependencies** → **Add** this URL:
+1. Open your game's `game.project` → **Dependencies** → **Add**:
    `https://github.com/WavestormSoftware/defold-git/archive/main.zip`
-   (to pin a release instead: `https://github.com/WavestormSoftware/defold-git/archive/refs/tags/v1.0.0.zip`)
+   (pin a release instead: `https://github.com/WavestormSoftware/defold-git/archive/refs/tags/v2.0.0.zip`)
 2. **Project → Fetch Libraries**
-3. **Project → Git: Setup / Doctor...** — verifies git, repo state, remotes
-   and `user.name` / `user.email`
-4. **Project → Git: Status / Commit & Push...** for daily work
+3. **Project → Git Panel** — that's the whole panel.
+4. First time? **Project → Git: Setup / Doctor...** verifies git, repo state,
+   remotes and identity, and can `git init` for you.
 
 **Option B — copy the folder:**
 
 Copy `wavestorm_git/` into your project root, then
 **Project → Reload Editor Scripts**.
 
-No native code, no extra build step, no bundled binaries — the extension
-shells out to your system `git`.
+No native code, no extra build step, no bundled binaries — it shells out to
+your system `git`.
 
-## Commands
+## The Git panel
 
-**Project menu:**
+Open with **Project → Git Panel**. It is non-modal: keep editing while it
+stays open (on Defold versions older than 1.13 it opens modal instead — the
+layout is identical). Every action re-queries git and refreshes in place.
 
-| Command | What it does |
-|---|---|
-| Git: Status / Commit & Push... | Main panel: tick files, write a message, Commit or Commit & Push. Shows branch, upstream, ahead/behind and conflicts. |
-| Git: Quick Commit... | Stage everything (`git add -A`) and commit with one message. |
-| Git: Push... | Push the current branch to a chosen remote (sets `-u` when there is no upstream yet). |
-| Git: Pull... | Pull from a chosen remote. Saves open files first. |
-| Git: Fetch | `git fetch --all`, then shows the branch summary. |
-| Git: History... | Last N commits (configurable, default 25). |
-| Git: Branches... | Switch branch, or create and switch to a new one. |
-| Git: Setup / Doctor... | Checks git version, repo state, branch, remotes, identity and `.gitignore`. Offers `git init` for non-repos. |
+- **Status** — Staged and Changes lists; per file: Open, Diff, Stage/Unstage,
+  Discard (with confirmation). Commit message field; Amend (auto-fills the
+  previous message); Commit staged, Commit & Push, Stage all & Commit;
+  Push-after-commit checkbox. Merge conflicts are listed and block commits
+  until resolved (resolve in Defold's *Changed Files* pane / external client).
+- **Sync** — Push / Pull / Fetch with remote and branch pickers and an
+  ff-only option. The first push sets upstream automatically.
+- **Branches** — switch, create & switch, delete (merged-check; force via
+  checkbox), detached-HEAD and empty-repo hints.
+- **History** — last N commits, each with a diff viewer.
 
-**File context (Assets / Code / Outline):** Git: Diff File, Git: Revert File...,
-Git: History for File, Git: Blame File (code files).
+## Also in the menus
+
+**Project:** Git Panel · Quick Commit (stage all + message) · History ·
+Setup / Doctor.
+
+**File context (Assets / Code / Outline):** Git: Diff File · Stage File ·
+Unstage File · Discard File Changes... · History for File · Blame File
+(Lua files).
 
 ## Preferences
 
-Set automatically on first load; edit via the editor's preferences:
-
-- `wavestorm_git.default_remote` (`"origin"`)
-- `wavestorm_git.auto_save` (`true`) — save open files before commit / push / pull / switch / revert
-- `wavestorm_git.push_after_commit` (`false`) — pre-tick "Push after commit"
-- `wavestorm_git.history_count` (`25`)
+| Key | Default | Meaning |
+|---|---|---|
+| `wavestorm_git.default_remote` | `origin` | Preselected remote |
+| `wavestorm_git.auto_save` | `true` | `editor.save()` before mutating ops |
+| `wavestorm_git.push_after_commit` | `false` | Pre-tick "Push after commit" |
+| `wavestorm_git.pull_ff_only` | `false` | Pre-tick "ff-only pull" |
+| `wavestorm_git.confirm_discard` | `true` | Confirm before discarding |
+| `wavestorm_git.history_count` | `25` | Commits listed in History |
 
 ## Notes
 
-- Merge conflicts must be resolved in an external client; the panel lists
-  conflicted files and refuses to stage them.
-- Read-only operations never trigger a resource reload; mutating ones do, so
-  the Assets view stays in sync.
+- Push/Pull errors mention the console; git's detailed stderr is always
+  printed to the editor console.
+- Empty repos, detached HEAD, missing remotes/identity and network failures
+  are detected and explained instead of dumping raw output.
 - Keep large binaries (PSD, WAV, …) in Git LFS or outside the repo.
-- Works alongside Defold's native *Changed Files* pane, it doesn't replace it.
+- Works alongside Defold's native *Changed Files* pane; it doesn't replace it.
 
 ## Developing
 
 ```sh
-lua wavestorm_git/tests/test_git_core.lua
+lua wavestorm_git/tests/test_git.lua     # also runs on lua5.1 and luajit
 ```
 
-Layout: `wavestorm_git/git.editor_script` (command registration),
-`wavestorm_git/git_core.lua` (git CLI wrapper + parsers),
-`wavestorm_git/git_ui.lua` (dialogs),
-`wavestorm_git/tests/test_git_core.lua` (tests, plain Lua, no editor needed).
+Layout: `wavestorm_git/git.editor_script` (entry: commands + prefs),
+`wavestorm_git/lib/git.lua` (exec backend + porcelain v2 parsers + ops),
+`wavestorm_git/lib/panel.lua` (the panel), `wavestorm_git/lib/dialogs.lua`
+(modal helpers), `wavestorm_git/tests/` (95 checks: fixtures from real git
+output + live temp-repo tests).
+
+After editing editor scripts run **Project → Reload Editor Scripts**.
 
 ## License
 
