@@ -48,16 +48,6 @@ end
 
 M.shquote = shquote
 
--- Read and delete the stderr capture file (editor backend only).
-local function read_errfile(path)
-	local f = io.open(path, "r")
-	if not f then return "" end
-	local text = f:read("*a") or ""
-	f:close()
-	os.remove(path)
-	return trim(text)
-end
-
 -- Low-level runner.
 -- args: array of strings AFTER "git", e.g. { "status", "--porcelain=v2", "-b" }
 -- opts: { reload = bool }  (true -> editor reloads resources afterwards)
@@ -78,20 +68,17 @@ function M.exec(args, opts)
 		end
 		for i = 1, #CONFIG_ARGS do call[#call + 1] = CONFIG_ARGS[i] end
 		for i = 1, #args do call[#call + 1] = tostring(args[i]) end
-		-- Capture stdout and stderr separately: editor.execute throws away
-		-- both streams when a command fails, which made every failure look
-		-- identical. Stderr is redirected to a file we read back afterwards.
-		local errfile = ".wavestorm_git_err.txt"
-		call[#call + 1] = { reload_resources = reload, out = "capture", err = errfile }
+		-- "stdout" merges stderr into the captured output: the editor throws
+		-- the output away on failure, but on success git's diagnostics survive
+		-- in the returned string. (err only accepts discard/stdout/pipe.)
+		call[#call + 1] = { reload_resources = reload, out = "capture", err = "stdout" }
 		local ok_exec, res = pcall(editor.execute, unpack_fn(call))
-		local err_text = read_errfile(errfile)
 		if ok_exec then
 			return true, trim(res or ""), nil
 		end
 		local msg = tostring(res)
 		local exit = tonumber(msg:match("exited with code (%-?%d+)")) or -1
-		if err_text == "" then err_text = msg end
-		return false, nil, { op = op, exit = exit, message = err_text }
+		return false, nil, { op = op, exit = exit, message = msg }
 	else
 		local parts = { "git" }
 		if dir_override then
