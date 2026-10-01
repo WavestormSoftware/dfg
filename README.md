@@ -15,7 +15,7 @@ Requires the `git` command-line client on your `PATH` (git 2.19+).
 
 1. Open your game's `game.project` → **Dependencies** → **Add**:
    `https://github.com/WavestormSoftware/dfg/archive/main.zip`
-   (pin a release instead: `https://github.com/WavestormSoftware/dfg/archive/refs/tags/2.0.zip`)
+   (pin a release instead: `https://github.com/WavestormSoftware/dfg/archive/refs/tags/2.1.zip`)
 2. **Project → Fetch Libraries**
 3. **Project → Git Panel** — that's the whole panel.
 4. First time? **Project → Git: Setup / Doctor...** verifies git, repo state,
