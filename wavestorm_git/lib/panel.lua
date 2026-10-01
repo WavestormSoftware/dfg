@@ -102,6 +102,25 @@ function M.open()
 	end
 
 	local data = collect_git_data()
+
+	-- Fetch once on open. This runs in the command's long-running context;
+	-- it must NOT run during panel rendering, which is an immediate context
+	-- where editor.execute is forbidden.
+	if prefs_get("wavestorm_git.auto_fetch", true) then
+		local git0 = require("wavestorm_git.lib.git")
+		local remotes = data.remotes_res
+		if remotes and remotes.ok and next(remotes.data) ~= nil then
+			local remote = prefs_get("wavestorm_git.default_remote", "origin")
+			local res = git0.fetch(remote)
+			data.last_fetch_at = os.time()
+			data.last_fetch = os.date("%H:%M")
+			data.fetch_state = res.ok and "ok" or "failed"
+			if res.ok then
+				data = collect_git_data(data)
+			end
+		end
+	end
+
 	local user = {
 		message = "",
 		amend = false,
@@ -821,30 +840,6 @@ function M.open()
 
 		local st = data.st
 
-		-- Auto-fetch: on open and whenever the panel re-renders after the
-		-- interval. Editor scripts have no timers, so the refresh is piggybacked
-		-- on interaction — every button press re-renders and re-checks.
-		local function maybe_auto_fetch()
-			if data.busy or data.auto_fetch_attempted then return end
-			if not prefs_get("wavestorm_git.auto_fetch", true) then return end
-			local remotes = data.remotes_res
-			if not (remotes and remotes.ok and next(remotes.data) ~= nil) then return end
-			local interval = tonumber(prefs_get("wavestorm_git.auto_fetch_minutes", 5)) or 5
-			local due = data.last_fetch_at == nil or (os.time() - data.last_fetch_at) >= interval * 60
-			if not due then return end
-			data.auto_fetch_attempted = true
-			act(function()
-				local res = git.fetch(user.selected_remote)
-				data.last_fetch_at = os.time()
-				data.last_fetch = os.date("%H:%M")
-				data.fetch_state = res.ok and "ok" or "failed"
-				-- A background fetch should not shout; only surface failures.
-				if res.ok then return nil end
-				return res
-			end)
-		end
-		maybe_auto_fetch()
-
 		-- Header: branch on the left, sync badge on the right.
 		local branch_text
 		local status_failed = false
@@ -923,8 +918,25 @@ function M.open()
 							}),
 							fetch_label,
 							row_button("Refresh", function()
-								act(function() return nil end)
-							end, true, "Re-read git status"),
+								act(function()
+									-- Auto-fetch rides along with Refresh: rendering is an
+									-- immediate context where git cannot run, so fetching
+									-- has to happen inside a button handler.
+									if prefs_get("wavestorm_git.auto_fetch", true) then
+										local interval = tonumber(prefs_get("wavestorm_git.auto_fetch_minutes", 5)) or 5
+										local due = data.last_fetch_at == nil
+											or (os.time() - data.last_fetch_at) >= interval * 60
+										if due then
+											local res = git.fetch(user.selected_remote)
+											data.last_fetch_at = os.time()
+											data.last_fetch = os.date("%H:%M")
+											data.fetch_state = res.ok and "ok" or "failed"
+											if not res.ok then return res end
+										end
+									end
+									return nil
+								end)
+							end, true, "Re-read git status (and fetch when due)"),
 						},
 					}),
 					u.separator({}),

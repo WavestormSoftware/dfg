@@ -4,11 +4,14 @@
 
 ### Fixed
 
-- "Not inside a git working tree" was shown for every git failure. The editor
-  discards a failed command's output, and the panel guessed the cause from the
-  exit code alone. Git's stderr is now captured to a temp file and shown
-  verbatim, and "not a repo" is reported only when git itself says so. The
-  panel header no longer truncates the error message.
+- "Cannot use long-running editor function in immediate context" on every
+  panel open. The auto-fetch ran during panel rendering, which is an immediate
+  context where editor.execute (and therefore git) is forbidden. Fetching now
+  happens when the panel opens and on Refresh, both long-running contexts.
+  This error was also what earlier looked like "not a repo" and "fetch failed".
+- Git failures are no longer all reported as "not a git working tree". The
+  editor discards a failed command's output, so the cause is classified from
+  git's own message where available and shown in full instead of truncated.
 
 ## 2.1.0 — 2026-10-01
 
