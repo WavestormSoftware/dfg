@@ -1,6 +1,31 @@
 # Changelog
 
-## 2.0.0 — 2026-09-30
+## 2.1.0 — 2026-10-01
+
+Collaboration-focused panel overhaul.
+
+### Added
+
+- **Auto-fetch**: the panel fetches from the remote when it opens and on
+  every interaction once `auto_fetch_minutes` (default 5) has elapsed, so the
+  team view stays current without a manual Fetch. Editor scripts have no
+  timers, so the check is piggybacked on panel interaction. New prefs:
+  `wavestorm_git.auto_fetch`, `wavestorm_git.auto_fetch_minutes`.
+- **Sync tab** now answers "am I up to date?" with a status banner and lists
+  incoming teammate commits (author, subject, relative time) before you pull.
+- **Stash shelf** on the Branches tab: park in-progress work (with a note,
+  including untracked files) before switching branches; pop or drop stashes.
+- **Activity feed** on the History tab: recent commits with relative times.
+- Header **sync badge**: "in sync", "3 behind — pull", "2 ahead — push",
+  "not pushed yet", "4 CONFLICTS", plus a "fetched 14:02" timestamp.
+
+### Changed
+
+- File rows show a colored status glyph (M + - R ? !) with the plain path
+  instead of raw git status codes; every button has a tooltip.
+- Status tab opens with a one-line summary ("3 staged · 1 unstaged").
+- Stage all / Unstage all disable themselves when there is nothing to do.
+- Tooltips throughout explaining what each action does.
 
 Full overhaul. The Git panel is now a single **non-modal, resizable window**
 (Defold 1.13+) that stays open while you keep editing — no more chains of

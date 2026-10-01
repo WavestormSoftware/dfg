@@ -32,7 +32,7 @@ local function supports_non_modal()
 end
 
 -- Git-side data; never contains user input state.
-local function collect_git_data()
+local function collect_git_data(old)
 	local git = require("wavestorm_git.lib.git")
 	local status = git.status()
 	local data = {
@@ -41,11 +41,23 @@ local function collect_git_data()
 		remotes_res = git.remotes(),
 		branches_res = git.branches(),
 		log_res = {},
+		activity_res = {},
+		incoming_res = {},
+		stash_res = {},
 		busy = false,
 		result = nil, -- { text = ..., color = ... }
+		-- auto-fetch state survives refreshes
+		last_fetch = old and old.last_fetch or nil,
+		fetch_state = old and old.fetch_state or nil, -- "ok" | "failed" | nil
 	}
 	local log = git.log(prefs_get("wavestorm_git.history_count", 25))
 	if log.ok then data.log_res = log.data end
+	local act = git.activity(8)
+	if act.ok then data.activity_res = act.data end
+	local inc = git.incoming(15)
+	if inc.ok then data.incoming_res = inc.data end
+	local stash = git.stash_list()
+	if stash.ok then data.stash_res = stash.data end
 	return data
 end
 
@@ -108,7 +120,7 @@ function M.open()
 		local _tick, set_tick = u.use_state(0)
 
 		local function refresh(res)
-			data = collect_git_data()
+			data = collect_git_data(data)
 			if res ~= nil then
 				local text = dialogs.result_text(res)
 				if text == "" or text == "nil" then text = "Done." end
@@ -285,7 +297,34 @@ function M.open()
 		end
 
 		local function do_fetch()
-			act(function() return git.fetch(user.selected_remote) end)
+			act(function()
+				local res = git.fetch(user.selected_remote)
+				data.last_fetch = os.date("%H:%M")
+				data.fetch_state = res.ok and "ok" or "failed"
+				return res
+			end)
+		end
+
+		local function do_stash_push()
+			save()
+			act(function()
+				local res = git.stash_push(user.stash_message)
+				if res.ok then user.stash_message = "" end
+				return res
+			end)
+		end
+
+		local function do_stash_pop(ref)
+			save()
+			act(function() return git.stash_pop(ref) end)
+		end
+
+		local function do_stash_drop(ref)
+			if not dialogs.confirm("Git: Drop stash?",
+				"Permanently drop " .. tostring(ref) .. "?\n\nThis cannot be undone.", "Drop") then
+				return
+			end
+			act(function() return git.stash_drop(ref) end)
 		end
 
 		local function do_switch()
@@ -326,22 +365,37 @@ function M.open()
 
 		-- UI builders ----------------------------------------------------------
 
-		local function row_button(text, on_pressed, enabled)
+		local function row_button(text, on_pressed, enabled, tooltip)
 			return u.button({
 				text = text,
 				on_pressed = on_pressed,
 				enabled = enabled ~= false and not data.busy,
+				tooltip = tooltip,
 			})
 		end
 
+		local STATUS_GLYPH = {
+			modified = "M", added = "+", deleted = "-", renamed = "R",
+			copied = "C", typechange = "T", untracked = "?", conflict = "!",
+		}
+		local STATUS_COLOR = {
+			conflict = u.COLOR.ERROR, deleted = u.COLOR.WARNING,
+			untracked = u.COLOR.HINT,
+		}
+
 		local function file_row(f, mode)
+			local glyph = STATUS_GLYPH[f.status] or "M"
+			local color = STATUS_COLOR[f.status] or u.COLOR.TEXT
+			local label_text = f.orig and (f.orig .. "  ->  " .. f.path) or f.path
 			local children = {
+				u.label({ text = glyph, color = color, alignment = u.ALIGNMENT.CENTER }),
 				u.label({
-					text = git.format_file_entry(f),
+					text = label_text,
 					grow = true,
 					alignment = u.ALIGNMENT.LEFT,
+					tooltip = f.status,
 				}),
-				row_button("Open", function() open_file(f.path) end),
+				row_button("Open", function() open_file(f.path) end, true, "Open in the editor"),
 			}
 			if mode == "staged" then
 				children[#children + 1] = row_button("Diff", function() show_diff(f) end)
@@ -349,7 +403,8 @@ function M.open()
 			elseif mode == "changes" then
 				children[#children + 1] = row_button("Diff", function() show_diff(f) end)
 				children[#children + 1] = row_button("Stage", function() do_stage(f.path) end)
-				children[#children + 1] = row_button("Discard", function() do_discard(f) end)
+				children[#children + 1] = row_button("Discard", function() do_discard(f) end, true,
+					"Throw away these changes (cannot be undone)")
 			end
 			return u.horizontal({ spacing = u.SPACING.SMALL, children = children })
 		end
@@ -370,21 +425,35 @@ function M.open()
 			local sec = sections(data)
 			local has_message = (user.message or ""):match("%S") ~= nil
 			local can_commit = (count_staged(data.st) > 0 or user.amend) and #sec.conflicts == 0
+			local total_changes = #sec.staged + #sec.changes
+
+			local summary_text
+			local summary_color = u.COLOR.HINT
+			if #sec.conflicts > 0 then
+				summary_text = string.format("%d merge conflict(s) — resolve these before committing", #sec.conflicts)
+				summary_color = u.COLOR.ERROR
+			elseif total_changes == 0 then
+				summary_text = "Working tree clean — nothing to commit"
+			else
+				summary_text = string.format("%d staged   ·   %d unstaged change(s)", #sec.staged, #sec.changes)
+				summary_color = u.COLOR.TEXT
+			end
 
 			return u.vertical({
 				spacing = u.SPACING.MEDIUM,
 				children = {
+					u.paragraph({ text = summary_text, color = summary_color }),
 					u.scroll({
 						grow = true,
 						content = u.vertical({
 							spacing = u.SPACING.MEDIUM,
 							children = {
 								#sec.conflicts > 0
-									and list_section("Merge conflicts (" .. #sec.conflicts
-										.. ") — resolve in an external client", sec.conflicts, "conflict", "")
+									and list_section("Conflicts — resolve in an external client",
+										sec.conflicts, "conflict", "")
 									or false,
-								list_section("Staged", sec.staged, "staged", "Nothing staged."),
-								list_section("Changes", sec.changes, "changes", "Working tree is clean."),
+								list_section("Staged for commit", sec.staged, "staged", "Nothing staged yet."),
+								list_section("Changes", sec.changes, "changes", "No unstaged changes."),
 							},
 						}),
 					}),
@@ -394,13 +463,13 @@ function M.open()
 						children = {
 							row_button("Stage all", function()
 								act(function() return git.add_all() end)
-							end),
+							end, #sec.changes > 0, "Stage every change"),
 							row_button("Unstage all", function()
 								act(function() return git.unstage(".") end)
-							end),
+							end, #sec.staged > 0, "Move everything back out of the commit"),
 						},
 					}),
-					u.label({ text = "Commit message (first line = summary):" }),
+					u.label({ text = "Commit message  —  first line is the summary" }),
 					u.string_field({
 						grow = true,
 						value = user.message,
@@ -412,6 +481,7 @@ function M.open()
 						children = {
 							u.check_box({
 								text = "Amend previous commit",
+								tooltip = "Add to the last commit instead of creating a new one",
 								value = user.amend,
 								on_value_changed = function(v)
 									local want = v == true
@@ -427,6 +497,7 @@ function M.open()
 							}),
 							u.check_box({
 								text = "Push after commit",
+								tooltip = "Push to the remote right after the commit succeeds",
 								value = user.push_after,
 								on_value_changed = function(v) user.push_after = v == true end,
 							}),
@@ -436,11 +507,11 @@ function M.open()
 						spacing = u.SPACING.SMALL,
 						children = {
 							row_button("Commit staged", function() do_commit(false) end,
-								can_commit and has_message),
+								can_commit and has_message, "Commit the staged files"),
 							row_button("Commit & Push", function() do_commit(true) end,
-								can_commit and has_message),
+								can_commit and has_message, "Commit and push in one step"),
 							row_button("Stage all & Commit", function() do_stage_all_and_commit() end,
-								has_message and #sec.conflicts == 0),
+								has_message and #sec.conflicts == 0, "Stage everything, then commit"),
 						},
 					}),
 				},
@@ -456,18 +527,75 @@ function M.open()
 			table.sort(remotes)
 			if #remotes == 0 then remotes = { "origin" } end
 			local has_remote = rres.ok and next(rres.data) ~= nil
+			local st = data.st
 
-			local result_component = false
-			if data.result then
-				result_component = u.paragraph({
-					text = data.result.text,
-					color = data.result.color,
+			-- Sync status banner: the one line that answers "am I up to date?"
+			local banner_text, banner_color
+			if not has_remote then
+				banner_text = "No remote configured — this project is local only"
+				banner_color = u.COLOR.WARNING
+			elseif st and not st.upstream then
+				banner_text = "This branch has never been pushed — Push sets up tracking"
+				banner_color = u.COLOR.WARNING
+			elseif st and ((st.behind or 0) > 0) then
+				banner_text = string.format("%d commit(s) from teammates waiting — Pull to get them", st.behind)
+				banner_color = u.COLOR.WARNING
+			elseif st and ((st.ahead or 0) > 0) then
+				banner_text = string.format("You are %d commit(s) ahead — Push to share your work", st.ahead)
+				banner_color = u.COLOR.TEXT
+			elseif st then
+				banner_text = "In sync with " .. tostring(st.upstream)
+				banner_color = u.COLOR.HINT
+			end
+
+			-- Incoming commits: who pushed what.
+			local incoming = data.incoming_res or {}
+			local incoming_children = {
+				u.heading({
+					text = #incoming > 0
+						and ("Incoming from teammates (" .. #incoming .. ")")
+						or "Incoming from teammates",
+					style = u.HEADING_STYLE.H4,
+				}),
+			}
+			if #incoming == 0 then
+				incoming_children[#incoming_children + 1] = u.paragraph({
+					text = (st and (st.behind or 0) == 0)
+						and "Nothing new — you have everything your teammates pushed."
+						or "Fetch to check what teammates have pushed.",
+					color = u.COLOR.HINT,
+				})
+			else
+				for i = 1, math.min(#incoming, 8) do
+					local c = incoming[i]
+					incoming_children[#incoming_children + 1] = u.label({
+						text = string.format("%s   %s   ·   %s   ·   %s",
+							c.short or "", c.subject or "", c.author or "", c.ago or ""),
+						color = u.COLOR.TEXT,
+					})
+				end
+				if #incoming > 8 then
+					incoming_children[#incoming_children + 1] = u.paragraph({
+						text = string.format("... and %d more", #incoming - 8),
+						color = u.COLOR.HINT,
+					})
+				end
+			end
+
+			local fetch_note = false
+			if data.last_fetch then
+				fetch_note = u.paragraph({
+					text = data.fetch_state == "failed"
+						and ("Last fetch FAILED at " .. data.last_fetch .. " — check network or credentials")
+						or ("Last fetched at " .. data.last_fetch),
+					color = data.fetch_state == "failed" and u.COLOR.ERROR or u.COLOR.HINT,
 				})
 			end
 
 			return u.vertical({
 				spacing = u.SPACING.MEDIUM,
 				children = {
+					banner_text and u.paragraph({ text = banner_text, color = banner_color }) or false,
 					u.grid({
 						columns = { {}, { grow = true } },
 						spacing = u.SPACING.SMALL,
@@ -479,10 +607,11 @@ function M.open()
 									on_value_changed = function(v) user.selected_remote = tostring(v) end,
 									enabled = not data.busy,
 								}) },
-							{ u.label({ text = "Branch (empty = current):", alignment = u.ALIGNMENT.RIGHT }),
+							{ u.label({ text = "Branch:", alignment = u.ALIGNMENT.RIGHT }),
 								u.string_field({
 									grow = true,
 									value = user.branch_field,
+									tooltip = "Leave empty to use the current branch",
 									on_value_changed = function(v) user.branch_field = v or "" end,
 									enabled = not data.busy,
 								}) },
@@ -491,20 +620,28 @@ function M.open()
 					u.horizontal({
 						spacing = u.SPACING.SMALL,
 						children = {
-							row_button("Push", do_push, has_remote),
-							row_button("Pull", do_pull, has_remote),
-							row_button("Fetch", do_fetch, has_remote),
+							row_button("Fetch", do_fetch, has_remote,
+								"Download teammates' commits without changing your files"),
+							row_button("Pull", do_pull, has_remote,
+								"Fetch and merge teammates' commits into your branch"),
+							row_button("Push", do_push, has_remote,
+								"Upload your commits so teammates can pull them"),
 							u.check_box({
-								text = "ff-only pull",
+								text = "pull: fast-forward only",
+								tooltip = "Refuse the pull instead of creating a merge commit",
 								value = user.ff_only,
 								on_value_changed = function(v) user.ff_only = v == true end,
 							}),
 						},
 					}),
+					fetch_note,
 					u.separator({}),
-					result_component,
+					u.scroll({
+						grow = true,
+						content = u.vertical({ spacing = u.SPACING.SMALL, children = incoming_children }),
+					}),
 					has_remote and false or u.paragraph({
-						text = "No remotes configured. Add one in a terminal:\n  git remote add origin <url>",
+						text = "Add a remote in a terminal:  git remote add origin <url>",
 						color = u.COLOR.WARNING,
 					}),
 				},
@@ -524,11 +661,52 @@ function M.open()
 			local head_hint = false
 			if st and st.head_state == "detached" then
 				head_hint = u.paragraph({
-					text = "Detached HEAD: commit or switch to a branch to keep changes.",
+					text = "Detached HEAD — you are not on a branch. Switch to one or your next commit may be hard to find.",
 					color = u.COLOR.WARNING,
 				})
 			elseif st and st.head_state == "initial" then
-				head_hint = u.paragraph({ text = "No commits yet.", color = u.COLOR.HINT })
+				head_hint = u.paragraph({ text = "No commits yet — make the first one on the Status tab.", color = u.COLOR.HINT })
+			end
+
+			-- Stash shelf: park work to switch branches safely.
+			local stashes = data.stash_res or {}
+			local stash_children = {
+				u.heading({ text = "Stashes  —  park work to switch branches", style = u.HEADING_STYLE.H4 }),
+				u.horizontal({
+					spacing = u.SPACING.SMALL,
+					children = {
+						u.string_field({
+							grow = true,
+							value = user.stash_message or "",
+							tooltip = "Optional note for the stash",
+							on_value_changed = function(v) user.stash_message = v or "" end,
+							enabled = not data.busy,
+						}),
+						row_button("Stash changes", do_stash_push, true,
+							"Shelve all current changes (including untracked files) so you can switch branches"),
+					},
+				}),
+			}
+			if #stashes == 0 then
+				stash_children[#stash_children + 1] = u.paragraph({
+					text = "No stashes. Stash your changes before switching branches when you are mid-task.",
+					color = u.COLOR.HINT,
+				})
+			else
+				for i = 1, #stashes do
+					local s = stashes[i]
+					local ref = s.ref
+					stash_children[#stash_children + 1] = u.horizontal({
+						spacing = u.SPACING.SMALL,
+						children = {
+							u.label({ text = ref .. "   " .. (s.subject or ""), grow = true }),
+							row_button("Pop", function() do_stash_pop(ref) end, true,
+								"Restore these changes into the working tree"),
+							row_button("Drop", function() do_stash_drop(ref) end, true,
+								"Delete this stash permanently"),
+						},
+					})
+				end
 			end
 
 			return u.vertical({
@@ -544,10 +722,12 @@ function M.open()
 					u.horizontal({
 						spacing = u.SPACING.SMALL,
 						children = {
-							row_button("Switch", do_switch),
-							row_button("Delete", do_delete_branch),
+							row_button("Switch", do_switch, true, "Check out the selected branch"),
+							row_button("Delete", do_delete_branch, true,
+								"Delete the selected branch (refuses if it has unmerged commits)"),
 							u.check_box({
 								text = "force delete",
+								tooltip = "Delete even if the branch has commits not merged into the current one",
 								value = user.force_delete,
 								on_value_changed = function(v) user.force_delete = v == true end,
 							}),
@@ -555,42 +735,69 @@ function M.open()
 					}),
 					head_hint,
 					u.separator({}),
-					u.label({ text = "Create a new branch:" }),
-					u.string_field({
-						grow = true,
-						value = user.new_branch,
-						on_value_changed = function(v) user.new_branch = v or "" end,
-						enabled = not data.busy,
+					u.label({ text = "New branch from current HEAD:" }),
+					u.horizontal({
+						spacing = u.SPACING.SMALL,
+						children = {
+							u.string_field({
+								grow = true,
+								value = user.new_branch,
+								tooltip = "letters, digits, - _ / .",
+								on_value_changed = function(v) user.new_branch = v or "" end,
+								enabled = not data.busy,
+							}),
+							row_button("Create & switch", do_create_branch),
+						},
 					}),
-					row_button("Create & switch", do_create_branch),
+					u.separator({}),
+					u.scroll({
+						grow = true,
+						content = u.vertical({ spacing = u.SPACING.SMALL, children = stash_children }),
+					}),
 				},
 			})
 		end
 
 		local function history_tab()
 			local commits = data.log_res or {}
+			local activity = data.activity_res or {}
+
+			-- Team activity feed: who did what, and how recently.
+			local feed = {
+				u.heading({ text = "Recent activity", style = u.HEADING_STYLE.H4 }),
+			}
+			if #activity == 0 then
+				feed[#feed + 1] = u.paragraph({ text = "No commits yet.", color = u.COLOR.HINT })
+			else
+				for i = 1, #activity do
+					local c = activity[i]
+					feed[#feed + 1] = u.label({
+						text = string.format("%-14s  %s   ·   %s",
+							c.ago or "", c.subject or "", c.author or ""),
+						tooltip = c.short or "",
+					})
+				end
+			end
+
 			local rows = {
-				row_button("Refresh history", function()
-					act(function()
-						local res = git.log(prefs_get("wavestorm_git.history_count", 25))
-						data.log_res = res.ok and res.data or {}
-						return { ok = true, data = "" }
-					end)
-				end, true),
+				u.vertical({ spacing = u.SPACING.SMALL, children = feed }),
+				u.separator({}),
+				u.heading({ text = "All commits", style = u.HEADING_STYLE.H4 }),
 			}
 			if #commits == 0 then
 				rows[#rows + 1] = u.paragraph({ text = "No commits yet.", color = u.COLOR.HINT })
 			else
 				for i = 1, #commits do
 					local c = commits[i]
-					rows[#rows + 1] = u.vertical({
+					rows[#rows + 1] = u.horizontal({
 						spacing = u.SPACING.SMALL,
 						children = {
-							u.paragraph({
-								text = string.format("%s  %s  %s\n    %s",
+							u.label({
+								text = string.format("%s   %s   %s   ·   %s",
 									c.short or "", c.date or "", c.author or "", c.subject or ""),
+								grow = true,
 							}),
-							row_button("View diff", function()
+							row_button("Diff", function()
 								act(function()
 									local res = git.commit_show(c.sha)
 									if res.ok then
@@ -599,7 +806,7 @@ function M.open()
 									end
 									return res
 								end)
-							end),
+							end, true, "Show what this commit changed"),
 						},
 					})
 				end
@@ -613,12 +820,77 @@ function M.open()
 		-- Header + assembly ----------------------------------------------------
 
 		local st = data.st
-		local header_text = st and git.summary(st)
-			or dialogs.result_text(data.status_res)
-		local header_color = (st and #st.conflicts > 0) and u.COLOR.ERROR or u.COLOR.TEXT
+
+		-- Auto-fetch: on open and whenever the panel re-renders after the
+		-- interval. Editor scripts have no timers, so the refresh is piggybacked
+		-- on interaction — every button press re-renders and re-checks.
+		local function maybe_auto_fetch()
+			if data.busy or data.auto_fetch_attempted then return end
+			if not prefs_get("wavestorm_git.auto_fetch", true) then return end
+			local remotes = data.remotes_res
+			if not (remotes and remotes.ok and next(remotes.data) ~= nil) then return end
+			local interval = tonumber(prefs_get("wavestorm_git.auto_fetch_minutes", 5)) or 5
+			local due = data.last_fetch_at == nil or (os.time() - data.last_fetch_at) >= interval * 60
+			if not due then return end
+			data.auto_fetch_attempted = true
+			act(function()
+				local res = git.fetch(user.selected_remote)
+				data.last_fetch_at = os.time()
+				data.last_fetch = os.date("%H:%M")
+				data.fetch_state = res.ok and "ok" or "failed"
+				-- A background fetch should not shout; only surface failures.
+				if res.ok then return nil end
+				return res
+			end)
+		end
+		maybe_auto_fetch()
+
+		-- Header: branch on the left, sync badge on the right.
+		local branch_text
+		if not st then
+			branch_text = dialogs.result_text(data.status_res)
+		elseif st.head_state == "detached" then
+			branch_text = "detached HEAD"
+		elseif st.head_state == "initial" then
+			branch_text = (st.branch or "main") .. "  ·  no commits yet"
+		else
+			branch_text = st.branch or "(unknown branch)"
+		end
+
+		local badge_text, badge_color = "local only", u.COLOR.HINT
+		if st and #st.conflicts > 0 then
+			badge_text = string.format("%d CONFLICTS", #st.conflicts)
+			badge_color = u.COLOR.ERROR
+		elseif st and st.upstream then
+			local ahead, behind = st.ahead or 0, st.behind or 0
+			if behind > 0 and ahead > 0 then
+				badge_text = string.format("%d behind · %d ahead", behind, ahead)
+				badge_color = u.COLOR.WARNING
+			elseif behind > 0 then
+				badge_text = string.format("%d behind — pull", behind)
+				badge_color = u.COLOR.WARNING
+			elseif ahead > 0 then
+				badge_text = string.format("%d ahead — push", ahead)
+				badge_color = u.COLOR.TEXT
+			else
+				badge_text = "in sync"
+				badge_color = u.COLOR.HINT
+			end
+		elseif st and st.head_state == "normal" then
+			badge_text = "not pushed yet"
+			badge_color = u.COLOR.WARNING
+		end
+
+		local fetch_label = false
+		if data.last_fetch then
+			fetch_label = u.label({
+				text = data.fetch_state == "failed" and "fetch failed" or ("fetched " .. data.last_fetch),
+				color = data.fetch_state == "failed" and u.COLOR.ERROR or u.COLOR.HINT,
+			})
+		end
 
 		local result_footer = false
-		if data.result then
+		if data.result and data.result.text ~= "" and data.result.text ~= "Done." then
 			result_footer = u.paragraph({ text = data.result.text, color = data.result.color })
 		end
 
@@ -626,8 +898,8 @@ function M.open()
 			title = "Git — Wavestorm",
 			modal = force_modal,
 			resizable = true,
-			width = 800,
-			height = 640,
+			width = 860,
+			height = 680,
 			content = u.vertical({
 				padding = u.PADDING.LARGE,
 				spacing = u.SPACING.MEDIUM,
@@ -636,18 +908,24 @@ function M.open()
 						spacing = u.SPACING.MEDIUM,
 						children = {
 							u.heading({
-								text = header_text,
-								style = u.HEADING_STYLE.H4,
-								color = header_color,
+								text = branch_text,
+								style = u.HEADING_STYLE.H3,
 								grow = true,
 							}),
+							u.heading({
+								text = badge_text,
+								style = u.HEADING_STYLE.H4,
+								color = badge_color,
+							}),
+							fetch_label,
 							row_button("Refresh", function()
-								act(function() return { ok = true, data = "" } end)
-							end),
+								act(function() return nil end)
+							end, true, "Re-read git status"),
 						},
 					}),
 					u.separator({}),
 					u.tabs({
+						grow = true,
 						tabs = {
 							u.tab({ text = "Status", content = status_tab() }),
 							u.tab({ text = "Sync", content = sync_tab() }),

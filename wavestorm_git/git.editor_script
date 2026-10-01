@@ -320,6 +320,8 @@ function M.get_prefs_schema()
 		["wavestorm_git.push_after_commit"] = editor.prefs.schema.boolean({ default = false }),
 		["wavestorm_git.pull_ff_only"] = editor.prefs.schema.boolean({ default = false }),
 		["wavestorm_git.confirm_discard"] = editor.prefs.schema.boolean({ default = true }),
+		["wavestorm_git.auto_fetch"] = editor.prefs.schema.boolean({ default = true }),
+		["wavestorm_git.auto_fetch_minutes"] = editor.prefs.schema.integer({ default = 5 }),
 		["wavestorm_git.history_count"] = editor.prefs.schema.integer({ default = 25 }),
 	}
 end

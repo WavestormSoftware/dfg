@@ -41,11 +41,16 @@ in place.
   previous message); Commit staged, Commit & Push, Stage all & Commit;
   Push-after-commit checkbox. Merge conflicts are listed and block commits
   until resolved (resolve in Defold's *Changed Files* pane / external client).
-- **Sync** — Push / Pull / Fetch with remote and branch pickers and an
-  ff-only option. The first push sets upstream automatically.
-- **Branches** — switch, create & switch, delete (merged-check; force via
-  checkbox), detached-HEAD and empty-repo hints.
-- **History** — last N commits, each with a diff viewer.
+- **Sync** — answers "am I up to date?" in one banner line. Lists the
+  commits teammates pushed that you don't have yet (author, message, how long
+  ago). Fetch / Pull / Push with tooltips explaining each; fast-forward-only
+  pull option. The panel auto-fetches when it opens and on every interaction
+  once the interval has passed, so the incoming list stays current.
+- **Branches** — switch, create & switch, delete (refuses unmerged commits
+  unless forced). Includes a stash shelf: park your in-progress changes
+  (with a note) before switching branches, then pop them back.
+- **History** — a team activity feed ("2 hours ago — Jane — added boss
+  fight") plus the full commit list, each with a diff viewer.
 
 ## Also in the menus
 
@@ -65,6 +70,8 @@ Unstage File · Discard File Changes... · History for File · Blame File
 | `wavestorm_git.push_after_commit` | `false` | Pre-tick "Push after commit" |
 | `wavestorm_git.pull_ff_only` | `false` | Pre-tick "ff-only pull" |
 | `wavestorm_git.confirm_discard` | `true` | Confirm before discarding |
+| `wavestorm_git.auto_fetch` | `true` | Fetch from the remote automatically |
+| `wavestorm_git.auto_fetch_minutes` | `5` | Minimum minutes between auto-fetches |
 | `wavestorm_git.history_count` | `25` | Commits listed in History |
 
 ## Notes

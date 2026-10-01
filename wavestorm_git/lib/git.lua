@@ -453,6 +453,61 @@ function M.last_commit_message()
 	return ok(out or "")
 end
 
+-- Recent commits with relative dates ("2 hours ago") for the activity feed.
+function M.activity(count)
+	local repo = require_repo()
+	if repo then return repo end
+	local st = M.status()
+	if not st.ok then return st end
+	if st.data.head_state == "initial" then return ok({}) end
+	local args = {
+		"log", "--pretty=format:%h%x00%an%x00%ar%x00%s%x00",
+		"-n", tostring(tonumber(count) or 8),
+	}
+	local okk, out = M.exec(args)
+	if not okk then return fail("unknown", "git log failed.") end
+	local commits = {}
+	local toks = split_nul(out or "")
+	local n = #toks - (#toks % 4)
+	for i = 1, n, 4 do
+		if toks[i] ~= "" then
+			commits[#commits + 1] = {
+				short = toks[i], author = toks[i + 1],
+				ago = toks[i + 2], subject = toks[i + 3],
+			}
+		end
+	end
+	return ok(commits)
+end
+
+-- Commits on the upstream that are not in the local branch yet.
+function M.incoming(count)
+	local repo = require_repo()
+	if repo then return repo end
+	local st = M.status()
+	if not st.ok then return st end
+	if not st.data.upstream then return ok({}) end
+	local args = {
+		"log", "--pretty=format:%h%x00%an%x00%ar%x00%s%x00",
+		"-n", tostring(tonumber(count) or 15),
+		"HEAD.." .. st.data.upstream,
+	}
+	local okk, out = M.exec(args)
+	if not okk then return ok({}) end
+	local commits = {}
+	local toks = split_nul(out or "")
+	local n = #toks - (#toks % 4)
+	for i = 1, n, 4 do
+		if toks[i] ~= "" then
+			commits[#commits + 1] = {
+				short = toks[i], author = toks[i + 1],
+				ago = toks[i + 2], subject = toks[i + 3],
+			}
+		end
+	end
+	return ok(commits)
+end
+
 function M.blame(path)
 	local repo = require_repo()
 	if repo then return repo end
@@ -462,6 +517,66 @@ function M.blame(path)
 		return fail("unknown", "git blame failed (exit " .. tostring(err and err.exit) .. ").")
 	end
 	return ok(out)
+end
+
+-- Stash -------------------------------------------------------------------
+
+function M.stash_list()
+	local repo = require_repo()
+	if repo then return repo end
+	local okk, out = M.exec({ "stash", "list", "--pretty=format:%gd%x00%gs%x00" })
+	if not okk then return ok({}) end
+	local stashes = {}
+	local toks = split_nul(out or "")
+	for i = 1, #toks - (#toks % 2), 2 do
+		if toks[i] ~= "" then
+			stashes[#stashes + 1] = { ref = toks[i], subject = toks[i + 1] }
+		end
+	end
+	return ok(stashes)
+end
+
+function M.stash_push(message)
+	local repo = require_repo()
+	if repo then return repo end
+	local args = { "stash", "push", "--include-untracked" }
+	if message and trim(message) ~= "" then
+		args[#args + 1] = "-m"
+		args[#args + 1] = message
+	end
+	local okk, _, err = M.exec(args, { reload = true })
+	if not okk then
+		return fail("unknown", "git stash failed (exit " .. tostring(err and err.exit) .. ").")
+	end
+	return ok(nil)
+end
+
+function M.stash_pop(ref)
+	local repo = require_repo()
+	if repo then return repo end
+	local args = { "stash", "pop" }
+	if ref and ref ~= "" then args[#args + 1] = ref end
+	local okk, _, err = M.exec(args, { reload = true })
+	if not okk then
+		local st = M.status()
+		if st.ok and #st.data.conflicts > 0 then
+			return fail("conflict", "Stash pop stopped: conflicts in the working tree.",
+				"Resolve the conflicts listed in the panel, then commit.")
+		end
+		return fail("unknown", "git stash pop failed (exit " .. tostring(err and err.exit) .. ").")
+	end
+	return ok(nil)
+end
+
+function M.stash_drop(ref)
+	local repo = require_repo()
+	if repo then return repo end
+	if not ref or ref == "" then return fail("unknown", "No stash selected.") end
+	local okk, _, err = M.exec({ "stash", "drop", ref }, { reload = false })
+	if not okk then
+		return fail("unknown", "git stash drop failed (exit " .. tostring(err and err.exit) .. ").")
+	end
+	return ok(nil)
 end
 
 -- ---------------------------------------------------------------------------
