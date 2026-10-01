@@ -442,7 +442,10 @@ function M.open()
 
 		local function status_tab()
 			local sec = sections(data)
-			local has_message = (user.message or ""):match("%S") ~= nil
+			-- The message field reports its value only on Enter/focus-loss and
+			-- does not re-render the panel, so the buttons cannot be gated on
+			-- the message text — they would stay disabled forever. Whether a
+			-- message was typed is checked inside do_commit instead.
 			local can_commit = (count_staged(data.st) > 0 or user.amend) and #sec.conflicts == 0
 			local total_changes = #sec.staged + #sec.changes
 
@@ -526,11 +529,11 @@ function M.open()
 						spacing = u.SPACING.SMALL,
 						children = {
 							row_button("Commit staged", function() do_commit(false) end,
-								can_commit and has_message, "Commit the staged files"),
+								can_commit, "Commit the staged files"),
 							row_button("Commit & Push", function() do_commit(true) end,
-								can_commit and has_message, "Commit and push in one step"),
+								can_commit, "Commit and push in one step"),
 							row_button("Stage all & Commit", function() do_stage_all_and_commit() end,
-								has_message and #sec.conflicts == 0, "Stage everything, then commit"),
+								#sec.conflicts == 0, "Stage everything, then commit"),
 						},
 					}),
 				},
