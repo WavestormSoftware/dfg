@@ -151,13 +151,16 @@ function M.open()
 			set_tick(function(old) return old + 1 end)
 		end
 
-		-- Run a git action; errors never break the panel.
-		local function act(run_fn)
+		-- Run a git action; errors never break the panel. `label` is shown in the
+		-- header while the action runs so the panel never looks frozen.
+		local function act(run_fn, label)
 			if data.busy then return end
 			data.busy = true
+			data.busy_label = label or "Working..."
 			set_tick(function(old) return old + 1 end)
 			local okk, res = pcall(run_fn)
 			data.busy = false
+			data.busy_label = nil
 			if not okk then
 				res = { ok = false, kind = "script", message = tostring(res) }
 			end
@@ -173,11 +176,11 @@ function M.open()
 		-- Actions ------------------------------------------------------------
 
 		local function do_stage(path)
-			act(function() return git.add(path) end)
+			act(function() return git.add(path) end, "Staging...")
 		end
 
 		local function do_unstage(path)
-			act(function() return git.unstage(path) end)
+			act(function() return git.unstage(path) end, "Unstaging...")
 		end
 
 		local function do_discard(f)
@@ -191,7 +194,7 @@ function M.open()
 				end
 			end
 			save()
-			act(function() return git.discard(f.path, f.untracked) end)
+			act(function() return git.discard(f.path, f.untracked) end, "Discarding...")
 		end
 
 		local function show_diff(f)
@@ -255,11 +258,12 @@ function M.open()
 					user.message = ""
 					user.amend = false
 					if and_push or user.push_after then
+						data.busy_label = "Pushing..."
 						return push_after_commit(res)
 					end
 				end
 				return res
-			end)
+			end, and_push and "Committing & pushing..." or "Committing...")
 		end
 
 		local function do_stage_all_and_commit()
@@ -277,16 +281,18 @@ function M.open()
 			act(function()
 				local res = git.add_all()
 				if res.ok then
+					data.busy_label = "Committing..."
 					res = git.commit(user.message, false)
 					if res.ok then
 						user.message = ""
 						if user.push_after then
+							data.busy_label = "Pushing..."
 							return push_after_commit(res)
 						end
 					end
 				end
 				return res
-			end)
+			end, "Staging everything...")
 		end
 
 		local function do_push()
@@ -304,7 +310,7 @@ function M.open()
 					res = { ok = true, data = "Pushed to " .. tostring(user.selected_remote) .. "." }
 				end
 				return res
-			end)
+			end, "Pushing...")
 		end
 
 		local function do_pull()
@@ -312,7 +318,7 @@ function M.open()
 			act(function()
 				local branch = (user.branch_field or ""):match("%S")
 				return git.pull(user.selected_remote, branch, user.ff_only)
-			end)
+			end, "Pulling...")
 		end
 
 		local function do_fetch()
@@ -321,7 +327,7 @@ function M.open()
 				data.last_fetch = os.date("%H:%M")
 				data.fetch_state = res.ok and "ok" or "failed"
 				return res
-			end)
+			end, "Fetching...")
 		end
 
 		local function do_stash_push()
@@ -330,7 +336,7 @@ function M.open()
 				local res = git.stash_push(user.stash_message)
 				if res.ok then user.stash_message = "" end
 				return res
-			end)
+			end, "Stashing...")
 		end
 
 		local function do_stash_pop(ref)
@@ -491,10 +497,11 @@ function M.open()
 							end, #sec.staged > 0, "Move everything back out of the commit"),
 						},
 					}),
-					u.label({ text = "Commit message  —  first line is the summary" }),
+					u.label({ text = "Commit message  —  type it, then press Enter" }),
 					u.string_field({
 						grow = true,
 						value = user.message,
+						tooltip = "Press Enter to confirm the message, then click Commit",
 						on_value_changed = function(v) user.message = v or "" end,
 						enabled = not data.busy,
 					}),
@@ -898,8 +905,8 @@ function M.open()
 			title = "Git — Wavestorm",
 			modal = force_modal,
 			resizable = true,
-			width = 860,
-			height = 680,
+			width = 1100,
+			height = 820,
 			content = u.vertical({
 				padding = u.PADDING.LARGE,
 				spacing = u.SPACING.MEDIUM,
@@ -914,6 +921,11 @@ function M.open()
 								grow = true,
 								tooltip = status_failed and dialogs.result_text(data.status_res) or nil,
 							}),
+							data.busy and u.heading({
+								text = data.busy_label or "Working...",
+								style = u.HEADING_STYLE.H4,
+								color = u.COLOR.WARNING,
+							}) or false,
 							u.heading({
 								text = badge_text,
 								style = u.HEADING_STYLE.H4,
