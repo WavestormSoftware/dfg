@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.1 — 2026-10-02
+
+### Fixed
+
+- "Not inside a git working tree" was shown for every git failure. The editor
+  discards a failed command's output, and the panel guessed the cause from the
+  exit code alone. Git's stderr is now captured to a temp file and shown
+  verbatim, and "not a repo" is reported only when git itself says so. The
+  panel header no longer truncates the error message.
+
 ## 2.1.0 — 2026-10-01
 
 Collaboration-focused panel overhaul.

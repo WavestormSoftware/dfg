@@ -847,8 +847,10 @@ function M.open()
 
 		-- Header: branch on the left, sync badge on the right.
 		local branch_text
+		local status_failed = false
 		if not st then
-			branch_text = dialogs.result_text(data.status_res)
+			branch_text = "Git problem — click for details"
+			status_failed = true
 		elseif st.head_state == "detached" then
 			branch_text = "detached HEAD"
 		elseif st.head_state == "initial" then
@@ -910,7 +912,9 @@ function M.open()
 							u.heading({
 								text = branch_text,
 								style = u.HEADING_STYLE.H3,
+								color = status_failed and u.COLOR.ERROR or u.COLOR.TEXT,
 								grow = true,
+								tooltip = status_failed and dialogs.result_text(data.status_res) or nil,
 							}),
 							u.heading({
 								text = badge_text,
@@ -924,6 +928,10 @@ function M.open()
 						},
 					}),
 					u.separator({}),
+					status_failed and u.paragraph({
+						text = dialogs.result_text(data.status_res),
+						color = u.COLOR.ERROR,
+					}) or false,
 					u.tabs({
 						grow = true,
 						tabs = {
